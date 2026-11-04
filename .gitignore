@@ -1,0 +1,10 @@
+node_modules
+src-tauri/target
+src-tauri/gen
+
+# dati locali (cameras.json contiene le credenziali RTSP)
+cameras.json
+cameras.json.bak
+state.json
+data/
+ffmpeg.exe

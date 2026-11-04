@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cams</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header id="bar">
+    <strong class="brand">Cams</strong>
+    <label>Layout <select id="preset"></select></label>
+    <label>FPS <select id="fps"></select></label>
+    <span id="pager" hidden>
+      <button id="prev" title="Pagina precedente">‹</button>
+      <span id="pageLbl"></span>
+      <button id="next" title="Pagina successiva">›</button>
+    </span>
+    <span id="msg"></span>
+    <button id="cfg" title="Gestisci telecamere e file JSON">⚙ Impostazioni</button>
+    <button id="refresh" title="Rileggi cameras.json e riavvia i flussi">⟳ Aggiorna</button>
+    <button id="full" title="Schermo intero">⛶</button>
+  </header>
+  <main id="grid"></main>
+  <footer id="foot"><span id="ver"></span></footer>
+  <section id="settings" hidden>
+    <div class="sbar">
+      <strong>Impostazioni</strong>
+      <button id="tabList" class="on">Elenco</button>
+      <button id="tabJson">JSON</button>
+      <span class="sp"></span>
+      <button id="imp">Importa…</button>
+      <button id="exp">Esporta</button>
+      <input id="file" type="file" accept=".json,application/json" hidden>
+      <button id="sCancel">Chiudi</button>
+      <button id="sSave" class="pri">Salva</button>
+    </div>
+    <div id="sMsg"></div>
+    <div id="sList"></div>
+    <textarea id="sJson" spellcheck="false" hidden></textarea>
+  </section>
+  <script src="app.js"></script>
+  <script src="settings.js"></script>
+</body>
+</html>

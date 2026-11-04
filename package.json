@@ -1,0 +1,14 @@
+{
+  "name": "cams",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "server": "node server/server.js",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:portable": "tauri build --no-bundle"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

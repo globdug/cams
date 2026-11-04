@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Cams",
+  "identifier": "local.cams.dashboard",
+  "build": { "frontendDist": "../src" },
+  "app": {
+    "windows": [
+      { "label": "main", "title": "Cams", "width": 1280, "height": 760, "dragDropEnabled": false }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' http://127.0.0.1:17890 http://127.0.0.2:17890 http://127.0.0.3:17890 http://127.0.0.4:17890 http://127.0.0.5:17890 http://127.0.0.6:17890 http://127.0.0.7:17890 http://127.0.0.8:17890 data:; connect-src http://127.0.0.1:17890; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"]  }
+}
