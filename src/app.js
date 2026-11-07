@@ -298,6 +298,7 @@ function renderStats(t, d) {
     `Bitrate    ${srcKbps ? fmtRate(+srcKbps[1]) : '—'} (flusso originale)`,
     `Uscita     MJPEG ${outRes || '—'} · ${fpsOut == null ? '—' : fpsOut.toFixed(1)} fps · ${kbpsOut == null ? '—' : fmtRate(kbpsOut)}  (q${d.req.q}, richiesti ${d.req.fps} fps)`,
     `Frame      ${d.frames} inviati · dup ${dup} · drop ${drop} · velocità ${esc(pr.speed || '—')}`,
+    `Rete RTP   ${d.rtpBad ? `<span class="warn">${d.rtpBad} pacchetti fuori sequenza</span>` : 'nessun errore'}`,
     `Decodifica ${esc(hw)}`,
     `ffmpeg     CPU ${d.cpu == null ? '—' : d.cpu.toFixed(1) + '%'} · pid ${d.pid} · attivo da ${fmtTime(d.uptime)}`,
   ];

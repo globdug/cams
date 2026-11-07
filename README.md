@@ -53,3 +53,6 @@ Cams\
 
 ### Riavvio dei flussi al cambio di dimensione
 Cambiando layout o selezione, un flusso viene riavviato solo se il riquadro ha davvero bisogno di più dettaglio e la sorgente lo ha (il backend espone la larghezza nativa in `/api/streams`). I sub-stream a 640 px non si riavviano mai per un riquadro più grande.
+
+### Chiusura dei flussi
+ffmpeg non viene mai ucciso di colpo: il backend gli manda `q` su stdin, così chiude la sessione RTSP con un TEARDOWN (ci mette da mezzo secondo a 2 s, perché legge stdin ogni `-stats_period`); solo dopo 4 s di margine (3 s alla chiusura dell'app) lo termina a forza. Senza TEARDOWN alcuni NVR (Reolink) tengono aperte le sessioni vecchie e, accumulandosi, mescolano i flussi: pacchetti RTP fuori sequenza («bad cseq»), immagini corrotte o di un altro canale. Nelle statistiche (ⓘ) la riga «Rete RTP» conta questi pacchetti. Chiudi l'app normalmente: con «Termina attività» o `taskkill /F` il TEARDOWN non parte.

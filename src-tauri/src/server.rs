@@ -8,13 +8,16 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 const PORT: u16 = 17890;
 const STALL: Duration = Duration::from_secs(15);
+// Margine per la chiusura ordinata di ffmpeg: legge la "q" solo quando si sveglia il ciclo principale (ogni -stats_period,
+// 2 s), poi invia il TEARDOWN. Con un margine di 2 s il kill arrivava quasi sempre prima della fine.
+const GRACE: Duration = Duration::from_secs(4);
 // Il browser apre max 6 connessioni per indirizzo:porta e ogni flusso ne tiene una aperta. Ascolto su piu' indirizzi
 // di loopback (127.0.0.1-8) cosi' il client puo' distribuire i flussi e superare il limite.
 const ADDRS: usize = 8;
@@ -36,6 +39,7 @@ struct Cam {
 struct Live {
     sid: String,
     child: Mutex<Child>,
+    stdin: Mutex<Option<ChildStdin>>, // per la chiusura ordinata ("q")
     pid: u32,
     cam: String,
     cam_name: String,
@@ -52,7 +56,37 @@ struct Live {
     progress: Mutex<HashMap<String, String>>,
     bytes: AtomicU64,
     frames: AtomicU64,
+    rtp_bad: AtomicU64, // pacchetti RTP fuori sequenza segnalati da ffmpeg ("bad cseq")
     cpu: Mutex<(f64, Instant)>, // ultimo campione CPU (secondi, istante) per calcolare la percentuale
+}
+
+impl Live {
+    // Chiusura ordinata: "q" su stdin e ffmpeg chiude la sessione RTSP con un TEARDOWN. Se lo si uccide di colpo l'NVR tiene la
+    // sessione aperta per un po' e, accumulandosi, mescola i flussi (pacchetti RTP fuori sequenza, immagini corrotte o di altri canali).
+    fn quit(&self) {
+        if let Some(mut si) = self.stdin.lock().unwrap().take() {
+            let _ = si.write_all(b"q");
+            let _ = si.flush();
+        }
+    }
+
+    // Attende la chiusura del processo; allo scadere del tempo lo uccide.
+    fn wait_or_kill(&self, timeout: Duration) {
+        let end = Instant::now() + timeout;
+        loop {
+            let mut c = self.child.lock().unwrap();
+            if matches!(c.try_wait(), Ok(Some(_)) | Err(_)) {
+                return;
+            }
+            if Instant::now() >= end {
+                let _ = c.kill();
+                let _ = c.wait();
+                return;
+            }
+            drop(c);
+            std::thread::sleep(Duration::from_millis(40));
+        }
+    }
 }
 
 enum Phase {
@@ -89,6 +123,11 @@ fn log_line(live: &Live, last_err: &Mutex<String>, phase: &mut Phase, line: &str
                 if let Some(t) = m[i + 13..].split_whitespace().next() {
                     *live.hwdec.lock().unwrap() = t.to_string();
                 }
+            }
+        }
+        Some(("warning", m)) => {
+            if m.contains("bad cseq") {
+                live.rtp_bad.fetch_add(1, Ordering::Relaxed);
             }
         }
         Some(_) => {}
@@ -467,8 +506,14 @@ impl Backend {
 
     /// Ferma tutti i processi ffmpeg (chiusura app).
     pub fn kill_all(&self) {
-        for (_, l) in self.active.lock().unwrap().drain() {
-            let _ = l.child.lock().unwrap().kill();
+        let lives: Vec<Arc<Live>> = self.active.lock().unwrap().drain().map(|(_, l)| l).collect();
+        for l in &lives {
+            l.quit();
+        }
+        // chiusura ordinata (in parallelo, max 3 s in tutto), poi uccido chi non e' uscito
+        let end = Instant::now() + Duration::from_secs(3);
+        for l in &lives {
+            l.wait_or_kill(end.saturating_duration_since(Instant::now()));
         }
     }
 
@@ -617,7 +662,7 @@ impl Backend {
                             "req": { "w": l.w, "fps": l.fps, "q": l.q, "hwaccel": l.hw },
                             "input": *l.input.lock().unwrap(), "output": *l.output.lock().unwrap(), "hwdec": *l.hwdec.lock().unwrap(),
                             "progress": *l.progress.lock().unwrap(),
-                            "bytes": l.bytes.load(Ordering::Relaxed), "frames": l.frames.load(Ordering::Relaxed),
+                            "bytes": l.bytes.load(Ordering::Relaxed), "frames": l.frames.load(Ordering::Relaxed), "rtpBad": l.rtp_bad.load(Ordering::Relaxed),
                             "cpu": cpu,
                         })
                     })
@@ -672,7 +717,7 @@ impl Backend {
         args.extend(["-f", "mpjpeg", "-boundary_tag", "ffmpeg", "pipe:1"].map(String::from));
 
         let mut cmd = Command::new(&self.ffmpeg);
-        cmd.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(windows)]
         std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000 | 0x0000_4000); // senza finestra console, priorita' bassa (non rallenta il PC)
         let mut child = match cmd.spawn() {
@@ -684,10 +729,12 @@ impl Backend {
         };
         let mut out = child.stdout.take().unwrap();
         let err = child.stderr.take().unwrap();
+        let stdin = child.stdin.take();
         let live = Arc::new(Live {
             sid: sid.clone(),
             pid: child.id(),
             child: Mutex::new(child),
+            stdin: Mutex::new(stdin),
             cam: cam.id.clone(),
             cam_name: cam.name.clone(),
             stream: idx,
@@ -703,6 +750,7 @@ impl Backend {
             progress: Mutex::new(HashMap::new()),
             bytes: AtomicU64::new(0),
             frames: AtomicU64::new(0),
+            rtp_bad: AtomicU64::new(0),
             cpu: Mutex::new((0.0, Instant::now())),
         });
         self.active.lock().unwrap().insert(sid.clone(), live.clone());
@@ -727,7 +775,8 @@ impl Backend {
                     std::thread::sleep(Duration::from_millis(500));
                     if last.lock().unwrap().elapsed() > STALL {
                         stalled.store(true, Ordering::SeqCst);
-                        let _ = live.child.lock().unwrap().kill();
+                        live.quit();
+                        live.wait_or_kill(GRACE);
                         break;
                     }
                 }
@@ -757,11 +806,14 @@ impl Backend {
             }
         }
         done.store(true, Ordering::SeqCst);
-        {
-            let mut c = live.child.lock().unwrap();
-            let _ = c.kill();
-            let _ = c.wait();
+        if started {
+            live.quit();
         }
+        let drain = std::thread::spawn(move || {
+            let _ = std::io::copy(&mut out, &mut std::io::sink());
+        });
+        live.wait_or_kill(if started { GRACE } else { Duration::ZERO });
+        let _ = drain.join();
         let _ = err_thread.join();
         {
             let mut active = self.active.lock().unwrap();
