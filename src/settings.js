@@ -130,6 +130,7 @@ async function saveConfig() {
 
 function openSettings() {
   S.style.top = $('bar').offsetHeight + 'px';
+  $('groups').hidden = true;
   S.hidden = false;
   loadDraft();
 }

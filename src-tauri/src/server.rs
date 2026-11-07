@@ -32,6 +32,121 @@ struct Cam {
     streams: Vec<Stream>,
 }
 
+// Flusso attivo: processo ffmpeg e statistiche raccolte (log di ffmpeg, byte/frame inviati al client)
+struct Live {
+    sid: String,
+    child: Mutex<Child>,
+    pid: u32,
+    cam: String,
+    cam_name: String,
+    stream: usize,
+    label: String,
+    started: Instant,
+    w: f64,
+    fps: f64,
+    q: f64,
+    hw: String,
+    input: Mutex<String>,  // riga "Video: ..." dell'ingresso (codec, profilo, risoluzione, fps)
+    output: Mutex<String>, // riga "Video: mjpeg ..." dell'uscita
+    hwdec: Mutex<String>,  // tipo di decodifica hardware effettivamente usata
+    progress: Mutex<HashMap<String, String>>,
+    bytes: AtomicU64,
+    frames: AtomicU64,
+    cpu: Mutex<(f64, Instant)>, // ultimo campione CPU (secondi, istante) per calcolare la percentuale
+}
+
+enum Phase {
+    Input,
+    Output,
+}
+
+// Dividi una riga di log "[ctx @ addr] [livello] messaggio" in (livello, messaggio)
+fn split_level(l: &str) -> Option<(&'static str, &str)> {
+    ["fatal", "error", "warning", "info"].into_iter().find_map(|lv| l.find(&format!("[{lv}] ")).map(|i| (lv, &l[i + lv.len() + 3..])))
+}
+
+// Interpreta una riga di stderr di ffmpeg: errori, informazioni sui flussi e blocchi -progress (chiave=valore)
+fn log_line(live: &Live, last_err: &Mutex<String>, phase: &mut Phase, line: &str) {
+    let l = line.trim();
+    if l.is_empty() {
+        return;
+    }
+    match split_level(l) {
+        Some(("fatal" | "error", m)) => *last_err.lock().unwrap() = m.trim().to_string(),
+        Some(("info", m)) => {
+            let m = m.trim_start();
+            if m.starts_with("Stream mapping") || m.starts_with("Output #") {
+                *phase = Phase::Output;
+            }
+            if let Some(v) = m.strip_prefix("Stream #").and_then(|r| r.split_once(": Video: ")).map(|x| x.1) {
+                match phase {
+                    Phase::Input if live.input.lock().unwrap().is_empty() => *live.input.lock().unwrap() = v.to_string(),
+                    Phase::Output if v.starts_with("mjpeg") => *live.output.lock().unwrap() = v.to_string(),
+                    _ => {}
+                }
+            }
+            if let Some(i) = m.find("hwaccel type ") {
+                if let Some(t) = m[i + 13..].split_whitespace().next() {
+                    *live.hwdec.lock().unwrap() = t.to_string();
+                }
+            }
+        }
+        Some(_) => {}
+        None if !l.starts_with('[') => {
+            if let Some((k, v)) = l.split_once('=') {
+                live.progress.lock().unwrap().insert(k.trim().to_string(), v.trim().to_string());
+            }
+        }
+        None => {}
+    }
+}
+
+// Conta i frame nel flusso mpjpeg (ogni frame inizia con "--ffmpeg\r\n"), anche a cavallo di due letture
+fn count_frames(carry: &mut Vec<u8>, chunk: &[u8]) -> u64 {
+    const PAT: &[u8] = b"--ffmpeg\r\n";
+    let mut buf = std::mem::take(carry);
+    buf.extend_from_slice(chunk);
+    let (mut n, mut i) = (0, 0);
+    while i + PAT.len() <= buf.len() {
+        if buf[i..].starts_with(PAT) {
+            n += 1;
+            i += PAT.len();
+        } else {
+            i += 1;
+        }
+    }
+    *carry = buf[buf.len().saturating_sub(PAT.len() - 1)..].to_vec();
+    n
+}
+
+// Tempo CPU (utente + kernel) consumato dal processo, in secondi
+#[cfg(windows)]
+fn proc_cpu_secs(child: &Child) -> Option<f64> {
+    use std::os::windows::io::AsRawHandle;
+    #[repr(C)]
+    #[derive(Default, Clone, Copy)]
+    struct FileTime {
+        lo: u32,
+        hi: u32,
+    }
+    extern "system" {
+        fn GetProcessTimes(h: *mut std::ffi::c_void, c: *mut FileTime, e: *mut FileTime, k: *mut FileTime, u: *mut FileTime) -> i32;
+    }
+    let (mut c, mut e, mut k, mut u) = (FileTime::default(), FileTime::default(), FileTime::default(), FileTime::default());
+    if unsafe { GetProcessTimes(child.as_raw_handle(), &mut c, &mut e, &mut k, &mut u) } == 0 {
+        return None;
+    }
+    let t = |f: FileTime| ((f.hi as u64) << 32 | f.lo as u64) as f64 / 1e7; // unita' da 100 ns
+    Some(t(k) + t(u))
+}
+
+#[cfg(not(windows))]
+fn proc_cpu_secs(child: &Child) -> Option<f64> {
+    let stat = fs::read_to_string(format!("/proc/{}/stat", child.id())).ok()?;
+    let f: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+    Some((f.get(11)?.parse::<f64>().ok()? + f.get(12)?.parse::<f64>().ok()?) / 100.0) // tick da 10 ms
+}
+
 pub struct Backend {
     data: PathBuf,
     ffmpeg: PathBuf,
@@ -39,7 +154,7 @@ pub struct Backend {
     config_error: Mutex<Option<String>>,
     cfg_version: AtomicU64,
     seen_mtime: Mutex<Option<SystemTime>>,
-    active: Mutex<HashMap<String, Arc<Mutex<Child>>>>,
+    active: Mutex<HashMap<String, Arc<Live>>>,
     bound: Mutex<Vec<String>>,
     salt: RandomState,
     counter: AtomicU64,
@@ -343,8 +458,8 @@ impl Backend {
 
     /// Ferma tutti i processi ffmpeg (chiusura app).
     pub fn kill_all(&self) {
-        for (_, c) in self.active.lock().unwrap().drain() {
-            let _ = c.lock().unwrap().kill();
+        for (_, l) in self.active.lock().unwrap().drain() {
+            let _ = l.child.lock().unwrap().kill();
         }
     }
 
@@ -472,6 +587,31 @@ impl Backend {
                 let sids: Vec<String> = self.active.lock().unwrap().keys().cloned().collect();
                 send(&mut s, 200, &cors, &json!({ "sids": sids, "cfg": self.cfg_version.load(Ordering::SeqCst) }));
             }
+            "/api/stats" => {
+                let lives: Vec<Arc<Live>> = self.active.lock().unwrap().values().cloned().collect();
+                let streams: Vec<Value> = lives
+                    .iter()
+                    .map(|l| {
+                        let now = Instant::now();
+                        let cpu = proc_cpu_secs(&l.child.lock().unwrap()).map(|secs| {
+                            let mut prev = l.cpu.lock().unwrap();
+                            let pct = (secs - prev.0) / now.duration_since(prev.1).as_secs_f64().max(0.001) * 100.0;
+                            *prev = (secs, now);
+                            pct
+                        });
+                        json!({
+                            "sid": l.sid, "cam": l.cam, "name": l.cam_name, "stream": l.stream, "label": l.label, "pid": l.pid,
+                            "uptime": l.started.elapsed().as_secs(),
+                            "req": { "w": l.w, "fps": l.fps, "q": l.q, "hwaccel": l.hw },
+                            "input": *l.input.lock().unwrap(), "output": *l.output.lock().unwrap(), "hwdec": *l.hwdec.lock().unwrap(),
+                            "progress": *l.progress.lock().unwrap(),
+                            "bytes": l.bytes.load(Ordering::Relaxed), "frames": l.frames.load(Ordering::Relaxed),
+                            "cpu": cpu,
+                        })
+                    })
+                    .collect();
+                send(&mut s, 200, &cors, &json!({ "ffmpeg": self.ffmpeg.display().to_string(), "streams": streams }));
+            }
             _ => {
                 let route = p.strip_prefix("/stream/").and_then(|r| r.split_once('/')).filter(|(id, n)| !id.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
                 let Some((id, n)) = route else { return send(&mut s, 404, &cors, &json!({ "error": "not found" })) };
@@ -496,13 +636,14 @@ impl Backend {
             format!("{t:x}{:x}", self.counter.fetch_add(1, Ordering::Relaxed))
         });
 
-        let mut args: Vec<String> = ["-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay"].map(String::from).into();
+        // log con livello (per distinguere errori e informazioni sui flussi) e blocchi di progresso su stderr, ogni 2 s
+        let mut args: Vec<String> = ["-hide_banner", "-loglevel", "level+info", "-nostats", "-progress", "pipe:2", "-stats_period", "2", "-fflags", "nobuffer", "-flags", "low_delay"].map(String::from).into();
         // sonda di ingresso breve: meno CPU e avvio piu' rapido
         args.extend(["-probesize", "1000000", "-analyzeduration", "1000000"].map(String::from));
         // decodifica hardware (CAMS_HWACCEL=none per disattivarla); se non disponibile ffmpeg ripiega sul software
         let hw = std::env::var("CAMS_HWACCEL").unwrap_or_else(|_| "auto".into());
         if !hw.is_empty() && hw != "none" {
-            args.extend(["-hwaccel".into(), hw]);
+            args.extend(["-hwaccel".into(), hw.clone()]);
         }
         // timestamp = istante di arrivo: alcune telecamere (es. Reolink) partono da un PTS enorme e il filtro fps
         // duplicherebbe centinaia di migliaia di frame per colmare il vuoto (7 core di CPU per decine di secondi)
@@ -510,7 +651,12 @@ impl Backend {
         if st.url.to_ascii_lowercase().starts_with("rtsp") {
             args.extend(["-rtsp_transport".into(), "tcp".into()]);
         }
-        args.extend(["-i".into(), st.url.clone(), "-an".into(), "-vf".into(), format!("fps={fps},scale='min({w},iw)':-2:flags=fast_bilinear"), "-q:v".into(), qv.to_string()]);
+        args.extend(["-i".into(), st.url.clone()]);
+        // 1a uscita: copia del flusso originale verso il "nul", solo per misurarne il bitrate reale (progress: bitrate/total_size)
+        let nul = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        args.extend(["-map", "0:v:0", "-c", "copy", "-f", "nut", nul].map(String::from));
+        // 2a uscita: MJPEG per il browser
+        args.extend(["-map".into(), "0:v:0".into(), "-vf".into(), format!("fps={fps},scale='min({w},iw)':-2:flags=fast_bilinear"), "-q:v".into(), qv.to_string()]);
         args.extend(["-f", "mpjpeg", "-boundary_tag", "ffmpeg", "pipe:1"].map(String::from));
 
         let mut cmd = Command::new(&self.ffmpeg);
@@ -526,17 +672,36 @@ impl Backend {
         };
         let mut out = child.stdout.take().unwrap();
         let err = child.stderr.take().unwrap();
-        let child = Arc::new(Mutex::new(child));
-        self.active.lock().unwrap().insert(sid.clone(), child.clone());
+        let live = Arc::new(Live {
+            sid: sid.clone(),
+            pid: child.id(),
+            child: Mutex::new(child),
+            cam: cam.id.clone(),
+            cam_name: cam.name.clone(),
+            stream: idx,
+            label: st.label.clone(),
+            started: Instant::now(),
+            w,
+            fps,
+            q: qv,
+            hw: if hw.is_empty() { "none".into() } else { hw },
+            input: Mutex::new(String::new()),
+            output: Mutex::new(String::new()),
+            hwdec: Mutex::new(String::new()),
+            progress: Mutex::new(HashMap::new()),
+            bytes: AtomicU64::new(0),
+            frames: AtomicU64::new(0),
+            cpu: Mutex::new((0.0, Instant::now())),
+        });
+        self.active.lock().unwrap().insert(sid.clone(), live.clone());
 
         let last_err = Arc::new(Mutex::new(String::new()));
         let err_thread = {
-            let last_err = last_err.clone();
+            let (last_err, live) = (last_err.clone(), live.clone());
             std::thread::spawn(move || {
+                let mut phase = Phase::Input;
                 for l in BufReader::new(err).lines().map_while(Result::ok) {
-                    if !l.trim().is_empty() {
-                        *last_err.lock().unwrap() = l.trim().to_string();
-                    }
+                    log_line(&live, &last_err, &mut phase, &l);
                 }
             })
         };
@@ -544,13 +709,13 @@ impl Backend {
         let stalled = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicBool::new(false));
         {
-            let (last, stalled, done, child) = (last.clone(), stalled.clone(), done.clone(), child.clone());
+            let (last, stalled, done, live) = (last.clone(), stalled.clone(), done.clone(), live.clone());
             std::thread::spawn(move || {
                 while !done.load(Ordering::SeqCst) {
                     std::thread::sleep(Duration::from_millis(500));
                     if last.lock().unwrap().elapsed() > STALL {
                         stalled.store(true, Ordering::SeqCst);
-                        let _ = child.lock().unwrap().kill();
+                        let _ = live.child.lock().unwrap().kill();
                         break;
                     }
                 }
@@ -567,10 +732,13 @@ impl Backend {
             }
             h += "\r\n";
             if s.write_all(h.as_bytes()).is_ok() {
+                let mut carry = Vec::new();
                 while n > 0 {
                     if s.write_all(&buf[..n]).and_then(|_| s.flush()).is_err() {
                         break; // client chiuso
                     }
+                    live.bytes.fetch_add(n as u64, Ordering::Relaxed);
+                    live.frames.fetch_add(count_frames(&mut carry, &buf[..n]), Ordering::Relaxed);
                     *last.lock().unwrap() = Instant::now();
                     n = out.read(&mut buf).unwrap_or(0);
                 }
@@ -578,14 +746,14 @@ impl Backend {
         }
         done.store(true, Ordering::SeqCst);
         {
-            let mut c = child.lock().unwrap();
+            let mut c = live.child.lock().unwrap();
             let _ = c.kill();
             let _ = c.wait();
         }
         let _ = err_thread.join();
         {
             let mut active = self.active.lock().unwrap();
-            if active.get(&sid).is_some_and(|c| Arc::ptr_eq(c, &child)) {
+            if active.get(&sid).is_some_and(|l| Arc::ptr_eq(l, &live)) {
                 active.remove(&sid);
             }
         }

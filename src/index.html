@@ -9,6 +9,8 @@
 <body>
   <header id="bar">
     <strong class="brand">Cams</strong>
+    <label>Vista <select id="view" title="Tutte le telecamere, un gruppo o una singola telecamera"></select></label>
+    <button id="grp" title="Crea e modifica i gruppi di telecamere">👥 Gruppi</button>
     <label>Layout <select id="preset"></select></label>
     <label>FPS <select id="fps"></select></label>
     <span id="pager" hidden>
@@ -17,12 +19,24 @@
       <button id="next" title="Pagina successiva">›</button>
     </span>
     <span id="msg"></span>
+    <button id="stats" title="Mostra/nascondi le statistiche tecniche su tutti i riquadri">📊 Statistiche</button>
     <button id="cfg" title="Gestisci telecamere e file JSON">⚙ Impostazioni</button>
     <button id="refresh" title="Rileggi cameras.json e riavvia i flussi">⟳ Aggiorna</button>
     <button id="full" title="Schermo intero">⛶</button>
   </header>
   <main id="grid"></main>
+  <div id="none" hidden></div>
   <footer id="foot"><span id="ver"></span></footer>
+  <section id="groups" hidden>
+    <div class="sbar">
+      <strong>Gruppi di telecamere</strong>
+      <span class="dim">Scegli il gruppo dal menu «Vista» in alto.</span>
+      <span class="sp"></span>
+      <button id="gAdd">＋ Nuovo gruppo</button>
+      <button id="gClose" class="pri">Chiudi</button>
+    </div>
+    <div id="gList"></div>
+  </section>
   <section id="settings" hidden>
     <div class="sbar">
       <strong>Impostazioni</strong>
@@ -41,5 +55,6 @@
   </section>
   <script src="app.js"></script>
   <script src="settings.js"></script>
+  <script src="groups.js"></script>
 </body>
 </html>

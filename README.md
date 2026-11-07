@@ -41,3 +41,9 @@ Cams\
 - Decodifica hardware attiva di default (`-hwaccel auto`; si disattiva con la variabile `CAMS_HWACCEL=none`). Se non disponibile ffmpeg ripiega sul software.
 - I timestamp dei flussi sono quelli di arrivo (`-use_wallclock_as_timestamps 1`): alcune telecamere partono da un PTS enorme e il filtro `fps` duplicherebbe centinaia di migliaia di frame, saturando la CPU.
 - FPS massimi 15 (i sub-stream delle telecamere trasmettono 5-15 fps); i processi ffmpeg girano a priorità bassa.
+
+## Gruppi, viste e statistiche
+- **Vista** (barra in alto): tutte le telecamere, un gruppo, oppure una singola telecamera. Le telecamere fuori vista non avviano ffmpeg (meno CPU).
+- **👥 Gruppi**: crea gruppi (es. Casa, Ufficio) con nome e telecamere spuntate. Sono salvati in `state.json`, quindi non si perdono se riscrivi `cameras.json`.
+- **⟳ sul riquadro** (compare al passaggio del mouse): riavvia solo il flusso di quella telecamera.
+- **ⓘ sul riquadro / 📊 Statistiche**: overlay tecnico con codec, profilo, risoluzione, fps e bitrate del flusso originale, fps/bitrate/risoluzione in uscita, frame duplicati/scartati, velocità di ffmpeg, tipo di decodifica (hardware/software), CPU del processo ffmpeg e tempo di attività. I dati sono anche su `GET /api/stats`.
