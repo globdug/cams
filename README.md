@@ -37,6 +37,13 @@ Cams\
 └── data\           ← creata al primo avvio: cameras.json, state.json
 ```
 
+## Rilasci e aggiornamento automatico
+Il `cams.exe` portable lo compila GitHub Actions (`.github/workflows/release.yml`), non serve compilare in locale:
+- **Pubblicare una versione:** `npm run release -- 0.2.1` (da `main`, con tutto committato). Alza la versione in `package.json` e `Cargo.toml`, crea il tag `v0.2.1` e lo spinge; la build parte da sola e pubblica nelle *Releases* `cams.exe` e `cams.exe.sha256`. Il workflow rifiuta un tag diverso dalla versione in `Cargo.toml`.
+- **Build di prova senza release:** scheda *Actions* → *Release* → *Run workflow*; l'exe resta come artefatto del job.
+- **Nell'app:** dopo l'avvio e ogni 6 ore l'app legge l'ultima release; se è più recente compare in basso «Installa vX.Y.Z e riavvia». Cliccando sul numero di versione si forza il controllo. L'installazione scarica `cams.exe`, ne verifica lo SHA-256, rinomina l'exe in uso in `cams.exe.old` (Windows lo permette) e mette il nuovo al suo posto, poi chiude gli ffmpeg e riparte. `data\` e `ffmpeg.exe` non si toccano, e `ffmpeg.exe` non viene aggiornato. Se la cartella non è scrivibile (es. `Program Files`) l'aggiornamento fallisce senza danni.
+- L'aggiornamento legge le release del repo senza autenticarsi, quindi il repo deve essere pubblico.
+
 ## Consumo CPU
 - Decodifica hardware attiva di default (`-hwaccel auto`; si disattiva con la variabile `CAMS_HWACCEL=none`). Se non disponibile ffmpeg ripiega sul software.
 - I timestamp dei flussi sono quelli di arrivo (`-use_wallclock_as_timestamps 1`): alcune telecamere partono da un PTS enorme e il filtro `fps` duplicherebbe centinaia di migliaia di frame, saturando la CPU.

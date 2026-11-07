@@ -9,6 +9,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 serde_json = { version = "1", features = ["preserve_order"] }
+ureq = { version = "2", default-features = false, features = ["tls"] }
+sha2 = "0.10"
 
 [profile.release]
 opt-level = "s"

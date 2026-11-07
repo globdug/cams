@@ -1,5 +1,6 @@
 // Backend HTTP locale (porting di server/server.js): legge cameras.json, salva lo stato UI
 // e converte i flussi RTSP in MJPEG (via ffmpeg) consumabile da un <img>.
+use crate::update;
 use serde_json::{json, Map, Value};
 use std::collections::hash_map::RandomState;
 use std::collections::{HashMap, HashSet};
@@ -206,6 +207,10 @@ pub struct Backend {
     bound: Mutex<Vec<String>>,
     salt: RandomState,
     counter: AtomicU64,
+    update: Mutex<Option<(Instant, Option<update::Release>)>>, // ultimo controllo: in cache per non superare i limiti dell'API di GitHub
+    updating: AtomicBool,
+    relaunch: Mutex<Option<PathBuf>>, // exe appena installato, da rilanciare dopo la chiusura
+    exit: Mutex<Option<Box<dyn Fn() + Send + Sync>>>, // chiude l'app (impostato da main)
 }
 
 // ---------- utilita' ----------
@@ -482,11 +487,27 @@ impl Backend {
             bound: Mutex::new(Vec::new()),
             salt: RandomState::new(),
             counter: AtomicU64::new(0),
+            update: Mutex::new(None),
+            updating: AtomicBool::new(false),
+            relaunch: Mutex::new(None),
+            exit: Mutex::new(None),
         });
         b.load_cameras();
         for i in 1..=ADDRS {
             let addr = format!("127.0.0.{i}");
-            match TcpListener::bind((addr.as_str(), PORT)) {
+            // La prima porta puo' essere ancora della copia precedente, che chiude gli ffmpeg (fino a 3 s) dopo la chiusura della
+            // finestra: riapertura subito dopo, o riavvio dopo un aggiornamento. Riprovo per qualche secondo.
+            let mut tries = 0;
+            let bound = loop {
+                match TcpListener::bind((addr.as_str(), PORT)) {
+                    Err(e) if i == 1 && e.kind() == std::io::ErrorKind::AddrInUse && tries < 100 => {
+                        tries += 1;
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    r => break r,
+                }
+            };
+            match bound {
                 Ok(l) => {
                     b.bound.lock().unwrap().push(addr);
                     let b = b.clone();
@@ -501,7 +522,31 @@ impl Backend {
                 Err(e) => eprintln!("indirizzo {addr} non disponibile ({e}), ignorato"),
             }
         }
+        update::cleanup();
         Ok(b)
+    }
+
+    /// Come chiudere l'app (serve all'aggiornamento, che la riavvia).
+    pub fn set_exit(&self, f: impl Fn() + Send + Sync + 'static) {
+        *self.exit.lock().unwrap() = Some(Box::new(f));
+    }
+
+    /// Dopo la chiusura: se e' stato installato un aggiornamento, rilancia il nuovo exe.
+    pub fn relaunch_if_requested(&self) {
+        if let Some(exe) = self.relaunch.lock().unwrap().take() {
+            let _ = Command::new(&exe).current_dir(exe.parent().unwrap_or(Path::new("."))).spawn();
+        }
+    }
+
+    /// Ultima release di GitHub (None se non ce ne sono). Il risultato resta in cache 30 minuti salvo `force`.
+    fn latest_release(&self, force: bool) -> Result<Option<update::Release>, String> {
+        let mut cache = self.update.lock().unwrap();
+        if let Some((_, rel)) = cache.as_ref().filter(|(at, _)| !force && at.elapsed() < Duration::from_secs(1800)) {
+            return Ok(rel.clone());
+        }
+        let rel = update::latest()?;
+        *cache = Some((Instant::now(), rel.clone()));
+        Ok(rel)
     }
 
     /// Ferma tutti i processi ffmpeg (chiusura app).
@@ -635,6 +680,43 @@ impl Backend {
             "/api/state" => {
                 let v = fs::read_to_string(self.data.join("state.json")).map_err(|e| e.to_string()).and_then(|t| parse_json(&t)).unwrap_or_else(|_| json!({}));
                 send(&mut s, 200, &cors, &v);
+            }
+            "/api/update" if write => {
+                if self.updating.swap(true, Ordering::SeqCst) {
+                    return send(&mut s, 409, &cors, &json!({ "error": "aggiornamento gia' in corso" }));
+                }
+                let res = self
+                    .latest_release(true)
+                    .and_then(|r| r.filter(|r| update::is_newer(&r.tag)).ok_or_else(|| "nessun aggiornamento disponibile".to_string()))
+                    .and_then(|r| update::install(&r));
+                match res {
+                    Ok(exe) => {
+                        *self.relaunch.lock().unwrap() = Some(exe);
+                        send(&mut s, 200, &cors, &json!({ "ok": true }));
+                        if let Some(exit) = self.exit.lock().unwrap().as_ref() {
+                            exit(); // chiude l'app: dopo la chiusura degli ffmpeg parte il nuovo exe (vedi main)
+                        }
+                    }
+                    Err(e) => {
+                        self.updating.store(false, Ordering::SeqCst);
+                        send(&mut s, 500, &cors, &json!({ "error": e }));
+                    }
+                }
+            }
+            "/api/update" => {
+                match self.latest_release(req.query.contains_key("force")) {
+                    Ok(rel) => {
+                        let rel = rel.filter(|r| update::is_newer(&r.tag));
+                        send(&mut s, 200, &cors, &json!({
+                            "current": env!("CARGO_PKG_VERSION"),
+                            "available": rel.is_some(),
+                            "latest": rel.as_ref().map(|r| r.tag.as_str()),
+                            "notes": rel.as_ref().map(|r| r.notes.as_str()),
+                            "canInstall": cfg!(windows) && cfg!(not(debug_assertions)),
+                        }));
+                    }
+                    Err(e) => send(&mut s, 502, &cors, &json!({ "error": e })),
+                }
             }
             "/api/streams" => {
                 self.poll_config_change();

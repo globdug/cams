@@ -6,7 +6,8 @@
     "server": "node server/server.js",
     "dev": "tauri dev",
     "build": "tauri build",
-    "build:portable": "tauri build --no-bundle"
+    "build:portable": "tauri build --no-bundle",
+    "release": "node scripts/release.js"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

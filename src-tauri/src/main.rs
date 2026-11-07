@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod server;
+mod update;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,7 +20,10 @@ fn data_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
 fn main() {
     let app = tauri::Builder::default()
         .setup(|app| {
-            app.manage(server::Backend::start(data_dir()?)?);
+            let backend = server::Backend::start(data_dir()?)?;
+            let handle = app.handle().clone();
+            backend.set_exit(move || handle.exit(0));
+            app.manage(backend);
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -27,7 +31,9 @@ fn main() {
 
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
-            handle.state::<Arc<server::Backend>>().kill_all();
+            let backend = handle.state::<Arc<server::Backend>>();
+            backend.kill_all();
+            backend.relaunch_if_requested();
         }
     });
 }

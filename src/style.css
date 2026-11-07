@@ -11,7 +11,12 @@ button { cursor: pointer; }
 button:hover, select:hover { border-color: var(--acc); }
 #pager { display: flex; align-items: center; gap: 6px; }
 #pager[hidden] { display: none; }
-#foot { flex: none; height: 22px; display: flex; align-items: center; justify-content: flex-end; padding: 0 10px; background: var(--panel); border-top: 1px solid var(--line); color: var(--dim); font-size: 11px; }
+#foot { flex: none; height: 22px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 0 10px; background: var(--panel); border-top: 1px solid var(--line); color: var(--dim); font-size: 11px; }
+#foot button { font-size: 11px; padding: 0 6px; line-height: 16px; }
+#foot #ver { background: none; border-color: transparent; color: var(--dim); }
+#foot #ver:hover { color: var(--fg); }
+#updMsg.new { color: var(--acc); }
+#updMsg.err { color: #ffb454; }
 
 #grid { flex: 1; min-height: 0; display: grid; gap: 4px; padding: 4px; }
 

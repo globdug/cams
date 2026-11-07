@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: # build di prova: l'exe resta come artefatto del job, senza release
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: La versione del tag deve coincidere con quella nel codice
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "Il tag e' $GITHUB_REF_NAME ma src-tauri/Cargo.toml e' alla versione $v"
+            exit 1
+          fi
+
+      - run: npm run build:portable
+
+      - name: Exe e checksum
+        shell: bash
+        run: |
+          mkdir dist
+          cp src-tauri/target/release/cams.exe dist/cams.exe
+          cd dist
+          sha256sum cams.exe > cams.exe.sha256
+          cat cams.exe.sha256
+
+      - name: Pubblica la release
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/cams.exe dist/cams.exe.sha256 --title "$GITHUB_REF_NAME" --generate-notes
+
+      - name: Artefatto (build di prova)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cams-portable
+          path: dist/
