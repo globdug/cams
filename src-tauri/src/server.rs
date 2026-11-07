@@ -101,6 +101,15 @@ fn log_line(live: &Live, last_err: &Mutex<String>, phase: &mut Phase, line: &str
     }
 }
 
+// Larghezza dal testo "h264 (High), yuv420p(progressive), 1280x720, 15 fps, ..."
+fn src_width(input: &str) -> Option<u32> {
+    input.split([',', ' ']).find_map(|t| {
+        let (w, h) = t.split_once('x')?;
+        h.parse::<u32>().ok()?;
+        w.parse::<u32>().ok().filter(|w| *w >= 16)
+    })
+}
+
 // Conta i frame nel flusso mpjpeg (ogni frame inizia con "--ffmpeg\r\n"), anche a cavallo di due letture
 fn count_frames(carry: &mut Vec<u8>, chunk: &[u8]) -> u64 {
     const PAT: &[u8] = b"--ffmpeg\r\n";
@@ -584,8 +593,11 @@ impl Backend {
             }
             "/api/streams" => {
                 self.poll_config_change();
-                let sids: Vec<String> = self.active.lock().unwrap().keys().cloned().collect();
-                send(&mut s, 200, &cors, &json!({ "sids": sids, "cfg": self.cfg_version.load(Ordering::SeqCst) }));
+                let lives: Vec<Arc<Live>> = self.active.lock().unwrap().values().cloned().collect();
+                let sids: Vec<&str> = lives.iter().map(|l| l.sid.as_str()).collect();
+                // larghezza nativa di ogni sorgente: il client evita di riavviare un flusso che non guadagna dettaglio
+                let src: Map<String, Value> = lives.iter().filter_map(|l| src_width(&l.input.lock().unwrap()).map(|w| (l.sid.clone(), json!(w)))).collect();
+                send(&mut s, 200, &cors, &json!({ "sids": sids, "src": src, "cfg": self.cfg_version.load(Ordering::SeqCst) }));
             }
             "/api/stats" => {
                 let lives: Vec<Arc<Live>> = self.active.lock().unwrap().values().cloned().collect();

@@ -47,3 +47,9 @@ Cams\
 - **👥 Gruppi**: crea gruppi (es. Casa, Ufficio) con nome e telecamere spuntate. Sono salvati in `state.json`, quindi non si perdono se riscrivi `cameras.json`.
 - **⟳ sul riquadro** (compare al passaggio del mouse): riavvia solo il flusso di quella telecamera.
 - **ⓘ sul riquadro / 📊 Statistiche**: overlay tecnico con codec, profilo, risoluzione, fps e bitrate del flusso originale, fps/bitrate/risoluzione in uscita, frame duplicati/scartati, velocità di ffmpeg, tipo di decodifica (hardware/software), CPU del processo ffmpeg e tempo di attività. I dati sono anche su `GET /api/stats`.
+
+### Selezione al volo
+**☑ Scegli** (accanto al menu Vista) apre un pannello con una casella per telecamera: spuntando o togliendo, la vista diventa «Selezione» senza creare un gruppo. Il pannello parte dalla vista corrente; con «Salva come gruppo» la selezione diventa un gruppo riutilizzabile.
+
+### Riavvio dei flussi al cambio di dimensione
+Cambiando layout o selezione, un flusso viene riavviato solo se il riquadro ha davvero bisogno di più dettaglio e la sorgente lo ha (il backend espone la larghezza nativa in `/api/streams`). I sub-stream a 640 px non si riavviano mai per un riquadro più grande.

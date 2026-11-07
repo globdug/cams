@@ -10,7 +10,8 @@ const $ = (id) => document.getElementById(id);
 const grid = $('grid');
 const tiles = new Map(); // id -> {cam, el, frame, img, st, sel..., sid, started, w, timer}
 let cams = [];
-let state = { preset: 'auto', fps: 10, order: [], cams: {}, groups: [], view: 'all' };
+let state = { preset: 'auto', fps: 10, order: [], cams: {}, groups: [], sel: [], view: 'all' };
+let lastLayout = ''; // chiave del layout all'ultimo render: la risoluzione dei flussi si rivaluta solo quando cambia
 let statsAll = false; // statistiche tecniche visibili su tutti i riquadri
 let focus = null;
 let page = 0;
@@ -38,7 +39,7 @@ async function load(restart = false) {
   catch { $('msg').textContent = 'Connessione al server…'; return setTimeout(load, 1000); }
   cams = c.cameras;
   if (c.hosts && c.hosts.length) hosts = [...c.hosts].sort();
-  state = Object.assign({ preset: 'auto', fps: 10, order: [], cams: {}, groups: [], view: 'all' }, s);
+  state = Object.assign({ preset: 'auto', fps: 10, order: [], cams: {}, groups: [], sel: [], view: 'all' }, s);
   state.fps = Math.min(state.fps, FPS[FPS.length - 1]); // stato salvato con i vecchi 25 fps
   if (state.v !== 2) { for (const k in state.cams) delete state.cams[k].stream; state.v = 2; save(); } // il flusso 1 salvato in automatico non era una scelta
   for (const t of tiles.values()) { // render() riavvia i flussi fermati
@@ -68,7 +69,8 @@ function viewIds() {
   if (v.startsWith('g:')) {
     const g = state.groups.find((x) => 'g:' + x.id === v);
     if (g) return state.order.filter((i) => g.cams.includes(i));
-  } else if (v.startsWith('c:') && state.order.includes(v.slice(2))) return [v.slice(2)];
+  } else if (v === 'sel') return state.order.filter((i) => state.sel.includes(i));
+  else if (v.startsWith('c:') && state.order.includes(v.slice(2))) return [v.slice(2)];
   return state.order;
 }
 
@@ -77,6 +79,7 @@ function buildViewMenu() {
   const add = (parent, value, text) => { const o = document.createElement('option'); o.value = value; o.textContent = text; parent.append(o); };
   sel.replaceChildren();
   add(sel, 'all', `Tutte (${cams.length})`);
+  if (state.sel.length || state.view === 'sel') add(sel, 'sel', `Selezione (${state.sel.filter((i) => cams.some((c) => c.id === i)).length})`);
   if (state.groups.length) {
     const og = document.createElement('optgroup');
     og.label = 'Gruppi';
@@ -95,6 +98,9 @@ function buildViewMenu() {
 function render() {
   const list = viewIds();
   const n = list.length;
+  const layout = [state.preset, state.view, list.join(), page, focus].join('|');
+  const relayout = layout !== lastLayout;
+  lastLayout = layout;
   const [cols, rows] = dims(n);
   if (focus && !list.includes(focus)) focus = null;
   const per = state.preset === 'auto' ? Math.max(1, n) : cols * rows;
@@ -117,13 +123,13 @@ function render() {
     t.el.style.order = pos;
     applyTile(t);
   }
-  for (const t of tiles.values()) if (!t.el.hidden) ensureStream(t);
+  for (const t of tiles.values()) if (!t.el.hidden) ensureStream(t, relayout);
   $('preset').value = state.preset;
   $('fps').value = state.fps;
   $('view').value = state.view;
   const none = $('none');
   none.hidden = n > 0 || !cams.length;
-  none.textContent = 'Questo gruppo è vuoto. Aggiungi telecamere da «👥 Gruppi».';
+  none.textContent = state.view === 'sel' ? 'Nessuna telecamera selezionata. Usa «☑ Scegli».' : 'Questo gruppo è vuoto. Aggiungi telecamere da «👥 Gruppi».';
   $('stats').classList.toggle('on', statsAll);
 }
 
@@ -202,8 +208,18 @@ const bucket = (t) => {
   return BUCKETS.find((b) => b >= px) || BUCKETS[BUCKETS.length - 1];
 };
 
-function ensureStream(t) {
-  if (t.sid) { if (!focus && bucket(t) !== t.w) restart(t); return; } // in focus nessun riavvio per cambio dimensione
+// Serve riavviare il flusso per cambio di dimensione? Solo se il riquadro vuole molto più dettaglio e la sorgente lo ha,
+// o se è molto più piccolo (risparmio CPU). Le sorgenti piccole (es. sub-stream 640x360) non guadagnano nulla da una larghezza maggiore.
+function wantsRestart(t) {
+  const need = bucket(t);
+  if (need === t.w) return false;
+  const src = t.srcW || Infinity; // larghezza nativa della sorgente, nota dopo qualche secondo
+  if (need > t.w) return src > t.w;
+  return Math.min(t.w, src) >= 2 * need; // larghezza effettiva del flusso: min(richiesta, nativa)
+}
+
+function ensureStream(t, relayout) {
+  if (t.sid) { if (relayout && !focus && wantsRestart(t)) restart(t); return; } // senza cambio di layout (o in focus) nessun riavvio per cambio dimensione
   start(t);
 }
 
@@ -211,6 +227,7 @@ function start(t) {
   clearTimeout(t.timer);
   t.sid = Math.random().toString(36).slice(2);
   t.started = Date.now();
+  t.srcW = null;
   t.w = bucket(t);
   t.st.textContent = 'Connessione…';
   t.img.src = `http://${hosts[Math.max(0, cams.indexOf(t.cam)) % hosts.length]}:17890/stream/${encodeURIComponent(t.cam.id)}/${streamOf(t.cam)}?w=${t.w}&fps=${state.fps}&sid=${t.sid}`;
@@ -232,6 +249,7 @@ setInterval(async () => {
   try {
     const r = await getJSON('/api/streams');
     alive = r.sids;
+    for (const t of tiles.values()) if (t.sid && r.src && r.src[t.sid]) t.srcW = r.src[t.sid];
     if (cfgSeen !== null && r.cfg !== cfgSeen) load(); // cameras.json modificato a mano
     cfgSeen = r.cfg;
   } catch { return; }
@@ -311,7 +329,12 @@ $('fps').innerHTML = FPS.map((f) => opt(f, f)).join('');
 $('preset').onchange = (e) => { state.preset = e.target.value; page = 0; focus = null; save(); render(); };
 $('fps').onchange = (e) => { state.fps = +e.target.value; save(); for (const t of tiles.values()) restart(t); };
 $('view').onchange = (e) => { state.view = e.target.value; page = 0; focus = null; save(); render(); };
-$('stats').onclick = () => { statsAll = !statsAll; for (const t of tiles.values()) { t.showStats = statsAll; t.prev = null; } render(); pollStats(); };
+$('stats').onclick = () => {
+  statsAll = !statsAll;
+  $('stats').classList.toggle('on', statsAll);
+  for (const t of tiles.values()) { t.showStats = statsAll; t.prev = null; applyStats(t); }
+  pollStats();
+};
 $('prev').onclick = () => { page = Math.max(0, page - 1); render(); };
 $('next').onclick = () => { page++; render(); };
 $('refresh').onclick = () => load(true);

@@ -74,3 +74,12 @@ button.del:hover { border-color: #ff6b6b; color: #ff6b6b; }
 .grp .cams input { flex: none; padding: 0; }
 .grp .row .dim { white-space: nowrap; }
 .sbar .dim { color: var(--dim); font-size: 12px; }
+
+#picker { position: fixed; z-index: 20; min-width: 230px; max-height: 70vh; overflow: auto; display: flex; flex-direction: column; gap: 6px; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 8px 24px #000a; }
+#picker[hidden] { display: none; }
+#picker label { display: flex; align-items: center; gap: 7px; padding: 2px; cursor: pointer; }
+#picker input[type=checkbox] { padding: 0; }
+#picker .row { display: flex; gap: 6px; }
+#picker .row input { flex: 1; min-width: 0; }
+#picker .dim { color: var(--dim); font-size: 12px; }
+#picker hr { border: 0; border-top: 1px solid var(--line); margin: 2px 0; width: 100%; }
