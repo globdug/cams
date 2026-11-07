@@ -497,16 +497,26 @@ impl Backend {
         });
 
         let mut args: Vec<String> = ["-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay"].map(String::from).into();
+        // sonda di ingresso breve: meno CPU e avvio piu' rapido
+        args.extend(["-probesize", "1000000", "-analyzeduration", "1000000"].map(String::from));
+        // decodifica hardware (CAMS_HWACCEL=none per disattivarla); se non disponibile ffmpeg ripiega sul software
+        let hw = std::env::var("CAMS_HWACCEL").unwrap_or_else(|_| "auto".into());
+        if !hw.is_empty() && hw != "none" {
+            args.extend(["-hwaccel".into(), hw]);
+        }
+        // timestamp = istante di arrivo: alcune telecamere (es. Reolink) partono da un PTS enorme e il filtro fps
+        // duplicherebbe centinaia di migliaia di frame per colmare il vuoto (7 core di CPU per decine di secondi)
+        args.extend(["-use_wallclock_as_timestamps".into(), "1".into()]);
         if st.url.to_ascii_lowercase().starts_with("rtsp") {
             args.extend(["-rtsp_transport".into(), "tcp".into()]);
         }
-        args.extend(["-i".into(), st.url.clone(), "-an".into(), "-vf".into(), format!("fps={fps},scale='min({w},iw)':-2"), "-q:v".into(), qv.to_string()]);
+        args.extend(["-i".into(), st.url.clone(), "-an".into(), "-vf".into(), format!("fps={fps},scale='min({w},iw)':-2:flags=fast_bilinear"), "-q:v".into(), qv.to_string()]);
         args.extend(["-f", "mpjpeg", "-boundary_tag", "ffmpeg", "pipe:1"].map(String::from));
 
         let mut cmd = Command::new(&self.ffmpeg);
         cmd.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(windows)]
-        std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000); // senza finestra console
+        std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000 | 0x0000_4000); // senza finestra console, priorita' bassa (non rallenta il PC)
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {

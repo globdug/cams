@@ -36,3 +36,8 @@ Cams\
 ├── ffmpeg.exe      ← accanto all'exe (oppure nel PATH, oppure variabile FFMPEG)
 └── data\           ← creata al primo avvio: cameras.json, state.json
 ```
+
+## Consumo CPU
+- Decodifica hardware attiva di default (`-hwaccel auto`; si disattiva con la variabile `CAMS_HWACCEL=none`). Se non disponibile ffmpeg ripiega sul software.
+- I timestamp dei flussi sono quelli di arrivo (`-use_wallclock_as_timestamps 1`): alcune telecamere partono da un PTS enorme e il filtro `fps` duplicherebbe centinaia di migliaia di frame, saturando la CPU.
+- FPS massimi 15 (i sub-stream delle telecamere trasmettono 5-15 fps); i processi ffmpeg girano a priorità bassa.

@@ -3,7 +3,7 @@ const API = 'http://127.0.0.1:17890'; // backend Node (la pagina puo' essere ser
 const PRESETS = ['auto', '1x1', '2x1', '2x2', '3x2', '3x3', '4x3', '3x4', '4x4', '5x4', '6x4']; // colonne x righe
 const ASPECTS = [['auto', 'Cella'], ['16:9', '16:9'], ['4:3', '4:3'], ['21:9', '21:9'], ['1:1', '1:1'], ['3:4', '3:4'], ['9:16', '9:16'], ['custom', 'Altro…']];
 const FITS = [['contain', 'Adatta'], ['cover', 'Ritaglia'], ['fill', 'Stira']];
-const FPS = [5, 10, 15, 25];
+const FPS = [5, 10, 15]; // le telecamere trasmettono a 15 fps: valori piu' alti duplicano frame e sprecano CPU
 const BUCKETS = [320, 480, 640, 960, 1280, 1920];
 
 const $ = (id) => document.getElementById(id);
@@ -38,6 +38,7 @@ async function load(restart = false) {
   cams = c.cameras;
   if (c.hosts && c.hosts.length) hosts = [...c.hosts].sort();
   state = Object.assign({ preset: 'auto', fps: 10, order: [], cams: {} }, s);
+  state.fps = Math.min(state.fps, FPS[FPS.length - 1]); // stato salvato con i vecchi 25 fps
   if (state.v !== 2) { for (const k in state.cams) delete state.cams[k].stream; state.v = 2; save(); } // il flusso 1 salvato in automatico non era una scelta
   for (const t of tiles.values()) { // render() riavvia i flussi fermati
     const n = cams.find((c) => c.id === t.cam.id);
