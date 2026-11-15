@@ -2,6 +2,7 @@
 
 mod server;
 mod update;
+mod usage;
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -20,6 +20,7 @@
       <button id="next" title="Pagina successiva">›</button>
     </span>
     <span id="msg"></span>
+    <button id="usage" title="CPU (% della CPU totale, come Task Manager) e RAM di tutta l'app: cams.exe, ffmpeg e interfaccia. Clic per il dettaglio.">CPU — · RAM —</button>
     <button id="stats" title="Mostra/nascondi le statistiche tecniche su tutti i riquadri">📊 Statistiche</button>
     <button id="cfg" title="Gestisci telecamere e file JSON">⚙ Impostazioni</button>
     <button id="refresh" title="Rileggi cameras.json e riavvia i flussi">⟳ Aggiorna</button>
@@ -28,6 +29,7 @@
   <main id="grid"></main>
   <div id="none" hidden></div>
   <div id="picker" hidden></div>
+  <div id="usagePop" hidden></div>
   <footer id="foot"><span id="updMsg"></span><button id="updBtn" class="pri" hidden></button><button id="ver" title="Controlla aggiornamenti"></button></footer>
   <section id="groups" hidden>
     <div class="sbar">
@@ -58,6 +60,7 @@
   <script src="app.js"></script>
   <script src="settings.js"></script>
   <script src="groups.js"></script>
+  <script src="usage.js"></script>
   <script src="update.js"></script>
 </body>
 </html>

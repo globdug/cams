@@ -1,6 +1,7 @@
 // Backend HTTP locale (porting di server/server.js): legge cameras.json, salva lo stato UI
 // e converte i flussi RTSP in MJPEG (via ffmpeg) consumabile da un <img>.
 use crate::update;
+use crate::usage;
 use serde_json::{json, Map, Value};
 use std::collections::hash_map::RandomState;
 use std::collections::{HashMap, HashSet};
@@ -168,34 +169,6 @@ fn count_frames(carry: &mut Vec<u8>, chunk: &[u8]) -> u64 {
     n
 }
 
-// Tempo CPU (utente + kernel) consumato dal processo, in secondi
-#[cfg(windows)]
-fn proc_cpu_secs(child: &Child) -> Option<f64> {
-    use std::os::windows::io::AsRawHandle;
-    #[repr(C)]
-    #[derive(Default, Clone, Copy)]
-    struct FileTime {
-        lo: u32,
-        hi: u32,
-    }
-    extern "system" {
-        fn GetProcessTimes(h: *mut std::ffi::c_void, c: *mut FileTime, e: *mut FileTime, k: *mut FileTime, u: *mut FileTime) -> i32;
-    }
-    let (mut c, mut e, mut k, mut u) = (FileTime::default(), FileTime::default(), FileTime::default(), FileTime::default());
-    if unsafe { GetProcessTimes(child.as_raw_handle(), &mut c, &mut e, &mut k, &mut u) } == 0 {
-        return None;
-    }
-    let t = |f: FileTime| ((f.hi as u64) << 32 | f.lo as u64) as f64 / 1e7; // unita' da 100 ns
-    Some(t(k) + t(u))
-}
-
-#[cfg(not(windows))]
-fn proc_cpu_secs(child: &Child) -> Option<f64> {
-    let stat = fs::read_to_string(format!("/proc/{}/stat", child.id())).ok()?;
-    let f: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
-    Some((f.get(11)?.parse::<f64>().ok()? + f.get(12)?.parse::<f64>().ok()?) / 100.0) // tick da 10 ms
-}
-
 pub struct Backend {
     data: PathBuf,
     ffmpeg: PathBuf,
@@ -207,6 +180,7 @@ pub struct Backend {
     bound: Mutex<Vec<String>>,
     salt: RandomState,
     counter: AtomicU64,
+    meter: Mutex<usage::Meter>, // ultime misure di CPU dei processi dell'app (per /api/usage)
     update: Mutex<Option<(Instant, Option<update::Release>)>>, // ultimo controllo: in cache per non superare i limiti dell'API di GitHub
     updating: AtomicBool,
     relaunch: Mutex<Option<PathBuf>>, // exe appena installato, da rilanciare dopo la chiusura
@@ -487,6 +461,7 @@ impl Backend {
             bound: Mutex::new(Vec::new()),
             salt: RandomState::new(),
             counter: AtomicU64::new(0),
+            meter: Mutex::new(usage::Meter::new()),
             update: Mutex::new(None),
             updating: AtomicBool::new(false),
             relaunch: Mutex::new(None),
@@ -732,7 +707,7 @@ impl Backend {
                     .iter()
                     .map(|l| {
                         let now = Instant::now();
-                        let cpu = proc_cpu_secs(&l.child.lock().unwrap()).map(|secs| {
+                        let cpu = usage::sample(l.pid).map(|s| s.cpu).map(|secs| {
                             let mut prev = l.cpu.lock().unwrap();
                             let pct = (secs - prev.0) / now.duration_since(prev.1).as_secs_f64().max(0.001) * 100.0;
                             *prev = (secs, now);
@@ -750,6 +725,32 @@ impl Backend {
                     })
                     .collect();
                 send(&mut s, 200, &cors, &json!({ "ffmpeg": self.ffmpeg.display().to_string(), "streams": streams }));
+            }
+            "/api/usage" => {
+                // tutto cio' che l'app fa girare: cams.exe, un ffmpeg per flusso, i processi di WebView2 (l'interfaccia) e le console
+                // nascoste (conhost.exe) che Windows crea per ogni ffmpeg
+                let me = std::process::id();
+                let mut lives: Vec<Arc<Live>> = self.active.lock().unwrap().values().cloned().collect();
+                lives.sort_by(|a, b| (&a.cam_name, &a.label, a.started).cmp(&(&b.cam_name, &b.label, b.started))); // righe sempre nello stesso ordine
+                let tree = usage::descendants(me);
+                let named = |exe: &str| -> Vec<u32> { tree.iter().filter(|(_, n)| n.eq_ignore_ascii_case(exe)).map(|(pid, _)| *pid).collect() };
+                let others = [("webview", named("msedgewebview2.exe")), ("console", named("conhost.exe"))];
+                let mut groups = vec![vec![me]];
+                groups.extend(lives.iter().map(|l| vec![l.pid]));
+                groups.extend(others.iter().map(|(_, pids)| pids.clone()));
+                let m = self.meter.lock().unwrap().measure(&groups);
+                let mut procs = vec![json!({ "kind": "app", "name": "cams.exe", "pid": me, "cpu": m[0].0, "mem": m[0].1 })];
+                for (l, (cpu, mem)) in lives.iter().zip(&m[1..]) {
+                    procs.push(json!({ "kind": "ffmpeg", "name": l.cam_name, "label": l.label, "pid": l.pid, "cpu": cpu, "mem": mem }));
+                }
+                for ((kind, pids), (cpu, mem)) in others.iter().zip(&m[1 + lives.len()..]) {
+                    if !pids.is_empty() {
+                        procs.push(json!({ "kind": kind, "n": pids.len(), "cpu": cpu, "mem": mem }));
+                    }
+                }
+                let cpu = m.iter().filter_map(|x| x.0).reduce(|a, b| a + b);
+                let mem: u64 = m.iter().map(|x| x.1).sum();
+                send(&mut s, 200, &cors, &json!({ "total": { "cpu": cpu, "mem": mem }, "procs": procs }));
             }
             _ => {
                 let route = p.strip_prefix("/stream/").and_then(|r| r.split_once('/')).filter(|(id, n)| !id.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
