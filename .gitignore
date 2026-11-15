@@ -8,3 +8,6 @@ cameras.json.bak
 state.json
 data/
 ffmpeg.exe
+
+# workspace di VS Code
+*.code-workspace
